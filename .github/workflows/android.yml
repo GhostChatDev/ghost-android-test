@@ -1,0 +1,156 @@
+name: Android Build
+on:
+  push:
+  workflow_dispatch:
+# One build per commit (no second run for the pull request); a newer push cancels the older build.
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Find the Android project
+        id: find
+        run: |
+          W=$(find . -maxdepth 3 -name gradlew -not -path "*/node_modules/*" | head -1)
+          if [ -z "$W" ]; then echo "::error::No gradlew found. Add the Gradle wrapper (gradle wrapper) to the repository."; exit 1; fi
+          echo "dir=$(dirname "$W")" >> "$GITHUB_OUTPUT"
+      - name: Build (debug) and run unit tests
+        working-directory: ${{ steps.find.outputs.dir }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew assembleDebug testDebugUnitTest --stacktrace
+      - name: Keep the debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apk
+          path: "**/build/outputs/apk/debug/*.apk"
+          if-no-files-found: ignore
+  # The click test, on an Android emulator: every button on the first screen is pressed and must change
+  # something (or open something) without crashing. Only for the final commit (its message has [ui-test]):
+  # it takes a few minutes of the repository's GitHub time.
+  ui-test:
+    needs: build
+    if: contains(github.event.head_commit.message, '[ui-test]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-debug-apk
+          path: apk
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Write the click test
+        run: |
+          cat > "$RUNNER_TEMP/click.py" <<'GHOST_CLICK'
+          import glob, re, subprocess, sys, time
+          import xml.etree.ElementTree as ET
+
+          def sh(*a):
+              try:
+                  return subprocess.run(a, capture_output=True, text=True, timeout=120)
+              except subprocess.TimeoutExpired:
+                  return subprocess.CompletedProcess(a, 1, "", "timed out")
+
+          apks = sorted(glob.glob("apk/**/*.apk", recursive=True))
+          if not apks:
+              print("FAIL: no debug APK was built")
+              sys.exit(1)
+          apk = apks[0]
+          r = sh("adb", "install", "-r", "-t", apk)
+          print((r.stdout + r.stderr)[-300:])
+          tools = sh("bash", "-lc", 'ls "$ANDROID_HOME/build-tools" | sort -V | tail -1').stdout.strip()
+          badging = sh("bash", "-lc", f'"$ANDROID_HOME/build-tools/{tools}/aapt" dump badging "{apk}" | head -1').stdout
+          m = re.search(r"package: name='([^']+)'", badging)
+          if not m:
+              print("FAIL: couldn't read the app's package name from the APK")
+              sys.exit(1)
+          pkg = m.group(1)
+
+          def launch():
+              sh("adb", "shell", "am", "force-stop", pkg)
+              sh("adb", "shell", "monkey", "-p", pkg, "-c", "android.intent.category.LAUNCHER", "1")
+              time.sleep(4)
+
+          def alive():
+              return bool(sh("adb", "shell", "pidof", pkg).stdout.strip())
+
+          def dump():
+              sh("adb", "shell", "uiautomator", "dump", "/sdcard/ui.xml")
+              x = sh("adb", "exec-out", "cat", "/sdcard/ui.xml").stdout
+              try:
+                  return ET.fromstring(x[x.find("<hierarchy"):]) if "<hierarchy" in x else None
+              except ET.ParseError:
+                  return None
+
+          # What a person would see change: the app's visible texts, descriptions and kinds of things on screen.
+          def signature(root):
+              if root is None:
+                  return ""
+              return "|".join(f"{n.get('class')}:{n.get('text')}:{n.get('content-desc')}:{n.get('checked')}" for n in root.iter("node") if n.get("package") == pkg)
+
+          def buttons(root):
+              out = []
+              for n in root.iter("node"):
+                  if n.get("package") != pkg or n.get("clickable") != "true" or n.get("enabled") != "true":
+                      continue
+                  b = [int(v) for v in re.findall(r"\d+", n.get("bounds", ""))]
+                  if len(b) != 4 or b[2] - b[0] < 10 or b[3] - b[1] < 10:
+                      continue
+                  label = (n.get("text") or n.get("content-desc") or n.get("resource-id", "").split("/")[-1] or n.get("class", "").split(".")[-1]).strip()[:30]
+                  out.append((label, (b[0] + b[2]) // 2, (b[1] + b[3]) // 2))
+              return out[:8]
+
+          launch()
+          if not alive():
+              print("FAIL: the app crashed when it opened")
+              print(sh("adb", "logcat", "-d", "-t", "200", "*:E").stdout[-1500:])
+              sys.exit(1)
+          root = dump()
+          targets = buttons(root) if root is not None else []
+          print(f"Found {len(targets)} buttons on the first screen")
+          dead, crashed = [], []
+          for label, x, y in targets:
+              launch()
+              before = signature(dump())
+              sh("adb", "shell", "input", "tap", str(x), str(y))
+              time.sleep(2)
+              if not alive():
+                  crashed.append(label)
+                  print("crashed: " + label)
+                  continue
+              after = signature(dump())
+              print(("works" if after != before else "does nothing") + ": " + label)
+              if after == before:
+                  dead.append(label)
+          print(f"CLICKS: {len(targets) - len(dead) - len(crashed)} of {len(targets)} buttons pressed did something")
+          fails = []
+          if crashed:
+              fails.append("the app crashed when pressing: " + ", ".join(crashed))
+          if dead:
+              fails.append("these buttons do nothing when pressed: " + ", ".join(dead) + ". Make each one work or remove it")
+          for f in fails:
+              print("FAIL: " + f)
+          sys.exit(1 if fails else 0)
+          GHOST_CLICK
+      - name: Click test on an Android emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: python3 "$RUNNER_TEMP/click.py"
