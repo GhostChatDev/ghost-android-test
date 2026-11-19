@@ -110,7 +110,9 @@ jobs:
                   b = [int(v) for v in re.findall(r"\d+", n.get("bounds", ""))]
                   if len(b) != 4 or b[2] - b[0] < 10 or b[3] - b[1] < 10:
                       continue
-                  label = (n.get("text") or n.get("content-desc") or n.get("resource-id", "").split("/")[-1] or n.get("class", "").split(".")[-1]).strip()[:30]
+                  # Compose and many layouts put the words on a child of the clickable node: use the first one found.
+                  inner = next((c.get("text") or c.get("content-desc") for c in n.iter() if (c.get("text") or c.get("content-desc"))), "")
+                  label = (n.get("text") or n.get("content-desc") or inner or n.get("resource-id", "").split("/")[-1] or n.get("class", "").split(".")[-1]).strip()[:30]
                   out.append((label, (b[0] + b[2]) // 2, (b[1] + b[3]) // 2))
               return out[:8]
 

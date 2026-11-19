@@ -60,7 +60,10 @@ fun TipScreen() {
         verticalArrangement = Arrangement.spacedBy(16.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("Tip Jar", fontSize = 32.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Tip Jar", fontSize = 32.sp, fontWeight = FontWeight.Bold)
+            OutlinedButton(onClick = { }) { Text("Help") } // deliberately does nothing: the click test must catch it
+        }
         Text("Bill " + Tip.money(billCents), fontSize = 22.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { billCents = maxOf(0, billCents - 500) }) { Text("- $5") }
