@@ -8,7 +8,7 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -28,6 +28,14 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug testDebugUnitTest --stacktrace
+      - name: Diagnose Maven Central availability
+        if: failure()
+        run: |
+          for url in \
+            https://repo.maven.apache.org/maven2/com/squareup/okio/okio/3.4.0/okio-3.4.0.pom \
+            https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-parcelize-runtime/1.9.22/kotlin-parcelize-runtime-1.9.22.pom; do
+            curl --location --show-error --output /dev/null --write-out "$url HTTP %{http_code}\n" "$url" || true
+          done
       - name: Keep the debug APK
         if: always()
         uses: actions/upload-artifact@v4
@@ -41,7 +49,7 @@ jobs:
   ui-test:
     needs: build
     if: contains(github.event.head_commit.message, '[ui-test]')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/download-artifact@v4
@@ -114,15 +122,74 @@ jobs:
                   inner = next((c.get("text") or c.get("content-desc") for c in n.iter() if (c.get("text") or c.get("content-desc"))), "")
                   label = (n.get("text") or n.get("content-desc") or inner or n.get("resource-id", "").split("/")[-1] or n.get("class", "").split(".")[-1]).strip()[:30]
                   out.append((label, (b[0] + b[2]) // 2, (b[1] + b[3]) // 2))
-              return out[:8]
+              return out
 
+          # Start fresh, add a drink, then force-stop and reopen to check persistence
+          # and make the initially disabled Undo button available for the click test.
+          sh("adb", "shell", "pm", "clear", pkg)
           launch()
           if not alive():
               print("FAIL: the app crashed when it opened")
               print(sh("adb", "logcat", "-d", "-t", "200", "*:E").stdout[-1500:])
               sys.exit(1)
           root = dump()
-          targets = buttons(root) if root is not None else []
+          if root is None:
+              print("FAIL: could not inspect the first screen")
+              sys.exit(1)
+          add = next((b for b in buttons(root) if "+ 250 ml" in b[0]), None)
+          if add is None:
+              print("FAIL: could not find the 250 ml button")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str(add[1]), str(add[2]))
+          time.sleep(2)
+          launch()
+          root = dump()
+          if root is None or not any(n.get("text") == "250 ml" for n in root.iter("node")):
+              print("FAIL: added drink was not visible after restarting the app")
+              sys.exit(1)
+          print("PASS: added drink survived restart")
+
+          # Change the goal through Settings, then verify that it also survives a restart.
+          settings = next((b for b in buttons(root) if "Settings" in b[0]), None)
+          if settings is None:
+              print("FAIL: Settings button not found")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str(settings[1]), str(settings[2]))
+          time.sleep(1)
+          settings_root = dump()
+          field = next((n for n in settings_root.iter("node") if n.get("class") == "android.widget.EditText"), None) if settings_root is not None else None
+          if field is None:
+              print("FAIL: goal input not found")
+              sys.exit(1)
+          bounds = [int(v) for v in re.findall(r"\d+", field.get("bounds", ""))]
+          if len(bounds) != 4:
+              print("FAIL: goal input has invalid bounds")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str((bounds[0] + bounds[2]) // 2), str((bounds[1] + bounds[3]) // 2))
+          sh("adb", "shell", "input", "keyevent", "KEYCODE_MOVE_END")
+          for _ in range(4):
+              sh("adb", "shell", "input", "keyevent", "KEYCODE_DEL")
+          sh("adb", "shell", "input", "text", "3000")
+          sh("adb", "shell", "input", "keyevent", "KEYCODE_BACK")
+          settings_root = dump()
+          save = next((b for b in buttons(settings_root) if "Save goal" in b[0]), None) if settings_root is not None else None
+          if save is None:
+              print("FAIL: Save goal button not found")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str(save[1]), str(save[2]))
+          time.sleep(2)
+          launch()
+          root = dump()
+          if root is None or not any("3000 ml" in (n.get("text") or "") for n in root.iter("node")):
+              print("FAIL: changed goal was not visible after restarting the app")
+              sys.exit(1)
+          print("PASS: changed goal survived restart")
+
+          targets = buttons(root)
+          for label in ("Settings", "+ 250 ml", "+ 500 ml", "Undo last drink"):
+              if not any(label in target[0] for target in targets):
+                  print("FAIL: expected enabled first-screen button not found: " + label)
+                  sys.exit(1)
           print(f"Found {len(targets)} buttons on the first screen")
           dead, crashed = [], []
           for label, x, y in targets:
