@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "TipJar"
+rootProject.name = "Water"
 include(":app")
