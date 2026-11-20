@@ -148,6 +148,43 @@ jobs:
               print("FAIL: added drink was not visible after restarting the app")
               sys.exit(1)
           print("PASS: added drink survived restart")
+
+          # Change the goal through Settings, then verify that it also survives a restart.
+          settings = next((b for b in buttons(root) if "Settings" in b[0]), None)
+          if settings is None:
+              print("FAIL: Settings button not found")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str(settings[1]), str(settings[2]))
+          time.sleep(1)
+          settings_root = dump()
+          field = next((n for n in settings_root.iter("node") if n.get("class") == "android.widget.EditText"), None) if settings_root is not None else None
+          if field is None:
+              print("FAIL: goal input not found")
+              sys.exit(1)
+          bounds = [int(v) for v in re.findall(r"\d+", field.get("bounds", ""))]
+          if len(bounds) != 4:
+              print("FAIL: goal input has invalid bounds")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str((bounds[0] + bounds[2]) // 2), str((bounds[1] + bounds[3]) // 2))
+          sh("adb", "shell", "input", "keyevent", "KEYCODE_MOVE_END")
+          for _ in range(4):
+              sh("adb", "shell", "input", "keyevent", "KEYCODE_DEL")
+          sh("adb", "shell", "input", "text", "3000")
+          sh("adb", "shell", "input", "keyevent", "KEYCODE_BACK")
+          settings_root = dump()
+          save = next((b for b in buttons(settings_root) if "Save goal" in b[0]), None) if settings_root is not None else None
+          if save is None:
+              print("FAIL: Save goal button not found")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str(save[1]), str(save[2]))
+          time.sleep(2)
+          launch()
+          root = dump()
+          if root is None or not any("3000 ml" in (n.get("text") or "") for n in root.iter("node")):
+              print("FAIL: changed goal was not visible after restarting the app")
+              sys.exit(1)
+          print("PASS: changed goal survived restart")
+
           targets = buttons(root)
           for label in ("Settings", "+ 250 ml", "+ 500 ml", "Undo last drink"):
               if not any(label in target[0] for target in targets):
