@@ -28,6 +28,14 @@ jobs:
         run: |
           chmod +x ./gradlew
           ./gradlew assembleDebug testDebugUnitTest --stacktrace
+      - name: Diagnose Maven Central availability
+        if: failure()
+        run: |
+          for url in \
+            https://repo.maven.apache.org/maven2/com/squareup/okio/okio/3.4.0/okio-3.4.0.pom \
+            https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-parcelize-runtime/1.9.22/kotlin-parcelize-runtime-1.9.22.pom; do
+            curl --location --show-error --output /dev/null --write-out "$url HTTP %{http_code}\n" "$url" || true
+          done
       - name: Keep the debug APK
         if: always()
         uses: actions/upload-artifact@v4
