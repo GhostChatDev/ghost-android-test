@@ -114,15 +114,37 @@ jobs:
                   inner = next((c.get("text") or c.get("content-desc") for c in n.iter() if (c.get("text") or c.get("content-desc"))), "")
                   label = (n.get("text") or n.get("content-desc") or inner or n.get("resource-id", "").split("/")[-1] or n.get("class", "").split(".")[-1]).strip()[:30]
                   out.append((label, (b[0] + b[2]) // 2, (b[1] + b[3]) // 2))
-              return out[:8]
+              return out
 
+          # Start fresh, add a drink, then force-stop and reopen to check persistence
+          # and make the initially disabled Undo button available for the click test.
+          sh("adb", "shell", "pm", "clear", pkg)
           launch()
           if not alive():
               print("FAIL: the app crashed when it opened")
               print(sh("adb", "logcat", "-d", "-t", "200", "*:E").stdout[-1500:])
               sys.exit(1)
           root = dump()
-          targets = buttons(root) if root is not None else []
+          if root is None:
+              print("FAIL: could not inspect the first screen")
+              sys.exit(1)
+          add = next((b for b in buttons(root) if "+ 250 ml" in b[0]), None)
+          if add is None:
+              print("FAIL: could not find the 250 ml button")
+              sys.exit(1)
+          sh("adb", "shell", "input", "tap", str(add[1]), str(add[2]))
+          time.sleep(2)
+          launch()
+          root = dump()
+          if root is None or not any(n.get("text") == "250 ml" for n in root.iter("node")):
+              print("FAIL: added drink was not visible after restarting the app")
+              sys.exit(1)
+          print("PASS: added drink survived restart")
+          targets = buttons(root)
+          for label in ("Settings", "+ 250 ml", "+ 500 ml", "Undo last drink"):
+              if not any(label in target[0] for target in targets):
+                  print("FAIL: expected enabled first-screen button not found: " + label)
+                  sys.exit(1)
           print(f"Found {len(targets)} buttons on the first screen")
           dead, crashed = [], []
           for label, x, y in targets:
