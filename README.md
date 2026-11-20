@@ -4,6 +4,6 @@ A native Android water tracker built with Kotlin, Jetpack Compose and Material 3
 
 ## Build
 
-Open this folder in Android Studio and run the `app` configuration on an Android 7.0 (API 24) or newer device or emulator. The project uses JDK 17 and its included Gradle wrapper. GitHub Actions builds the debug APK and runs unit tests; a commit message containing `[ui-test]` also checks first-screen buttons, including undo, and verifies that a drink survives an app restart on an emulator. The APK is available as the `android-debug-apk` workflow artifact.
+Open this folder in Android Studio and run the `app` configuration on an Android 7.0 (API 24) or newer device or emulator. The project uses JDK 17 and its included Gradle wrapper. GitHub Actions builds the debug APK and runs unit tests; a commit message containing `[ui-test]` also checks first-screen buttons, including undo, and verifies that a drink and a changed goal survive an app restart on an emulator. The APK is available as the `android-debug-apk` workflow artifact.
 
 Water does not require an account, network access, or runtime permissions.
